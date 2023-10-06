@@ -1,0 +1,74 @@
+name: Build and Publish Container
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+      - 'develop'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - 'main'
+      - 'develop'
+
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: "${{ github.repository_owner }}/lemmy"
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            # all: sha-a6b5c4
+            type=sha,enable=true,priority=100,prefix=sha-,suffix=,format=short
+            # prs: pr-4
+            type=ref,enable=true,priority=200,prefix=pr-,suffix=,event=pr
+            # branches: br-main
+            type=ref,enable=true,priority=300,prefix=br-,suffix=,event=branch
+            # tags: v1.2.3
+            type=semver,enable=true,priority=400,pattern={{version}},event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms:
+            - "linux/arm64"
+            - "linux/amd64"
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
