@@ -10,45 +10,29 @@
 #   `rustup target add $TARGET-unknown-linux-musl`.
 #
 
-ARG RUST_VERSION=1.71.0
+ARG RUST_VERSION=1.72.1
+ARG DEBIAN_VERSION=bookworm
 ARG ALPINE_VERSION=3.18
 ARG CARGO_BUILD_FEATURES=default
 ARG RUST_RELEASE_MODE=debug
 ARG UID=911
 ARG GID=911
 
-# AMD64 builder base
-FROM --platform=${BUILDPLATFORM} blackdex/rust-musl:x86_64-musl-stable-${RUST_VERSION}-openssl3 AS base-amd64
+FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} as base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CARGO_HOME=/root/.cargo
-ENV PQ_LIB_DIR=/usr/local/musl/pq15/lib
+#ENV PQ_LIB_DIR=/usr/local/musl/pq15/lib
 
-RUN apt update && apt install -y \
+RUN apt-get update && apt-get install -y \
     --no-install-recommends \
-    git
+    git=1:2.39.2-1.1
 
 RUN mkdir -pv "${CARGO_HOME}" && \
-    rustup set profile minimal && \
-    rustup target add x86_64-unknown-linux-musl
-
-# ARM64 builder base
-FROM --platform=${BUILDPLATFORM} blackdex/rust-musl:aarch64-musl-stable-${RUST_VERSION}-openssl3 AS base-arm64
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CARGO_HOME=/root/.cargo
-ENV PQ_LIB_DIR=/usr/local/musl/pq15/lib
-
-RUN apt update && apt install -y \
-    --no-install-recommends \
-    git
-
-RUN mkdir -pv "${CARGO_HOME}" && \
-    rustup set profile minimal && \
-    rustup target add aarch64-unknown-linux-musl
+    rustup set profile minimal
 
 # AMD64 builder
-FROM base-amd64 AS build-amd64
+FROM base AS build
 
 ARG CARGO_BUILD_FEATURES
 ARG RUST_RELEASE_MODE
@@ -61,64 +45,50 @@ COPY . ./
 RUN --mount=type=cache,target=/lemmy/target set -ex; \
     if [ "${RUST_RELEASE_MODE}" = "debug" ]; then \
         echo "pub const VERSION: &str = \"$(git describe --tag)\";" > crates/utils/src/version.rs; \
-        cargo build --target=x86_64-unknown-linux-musl --features "${CARGO_BUILD_FEATURES}"; \
-        mv target/x86_64-unknown-linux-musl/debug/lemmy_server ./lemmy; \
+        cargo build --features "${CARGO_BUILD_FEATURES}" --target-dir target; \
+        ls -R target; \
+        mv target/debug/lemmy_server ./lemmy; \
     fi
 
 # Release build
 RUN set -ex; \
     if [ "${RUST_RELEASE_MODE}" = "release" ]; then \
         echo "pub const VERSION: &str = \"$(git describe --tag)\";" > crates/utils/src/version.rs; \
-        cargo build --target=x86_64-unknown-linux-musl --features "${CARGO_BUILD_FEATURES}" --release; \
-        mv target/x86_64-unknown-linux-musl/release/lemmy_server ./lemmy; \
+        cargo build --features "${CARGO_BUILD_FEATURES}" --release --target-dir target; \
+        ls -R target; \
+        mv target/release/lemmy_server ./lemmy; \
     fi
-
-# ARM64 builder
-FROM base-arm64 AS build-arm64
-
-ARG CARGO_BUILD_FEATURES
-ARG RUST_RELEASE_MODE
-
-WORKDIR /lemmy
-
-COPY . ./
-
-# Debug build
-RUN --mount=type=cache,target=/lemmy/target set -ex; \
-    if [ "${RUST_RELEASE_MODE}" = "debug" ]; then \
-        echo "pub const VERSION: &str = \"$(git describe --tag)\";" > crates/utils/src/version.rs; \
-        cargo build --target=aarch64-unknown-linux-musl --features "${CARGO_BUILD_FEATURES}"; \
-        mv target/aarch64-unknown-linux-musl/debug/lemmy_server ./lemmy; \
-    fi
-
-# Release build
-RUN set -ex; \
-    if [ "${RUST_RELEASE_MODE}" = "release" ]; then \
-        echo "pub const VERSION: &str = \"$(git describe --tag)\";" > crates/utils/src/version.rs; \
-        cargo build --target=aarch64-unknown-linux-musl --features "${CARGO_BUILD_FEATURES}" --release; \
-        mv target/aarch64-unknown-linux-musl/release/lemmy_server ./lemmy; \
-    fi
-
-# Get target binary
-FROM build-${TARGETARCH} AS build
 
 ## Final image
-FROM alpine:${ALPINE_VERSION} 
+FROM rust:${RUST_VERSION}-slim-${DEBIAN_VERSION} as release
 
 ARG UID
 ARG GID
 
-RUN apk add --no-cache \
-    ca-certificates
+COPY --from=build --chmod=0755 /lemmy/lemmy /usr/local/bin/lemmy
 
-COPY --from=build --chmod=0755 /lemmy/lemmy /usr/local/bin
+RUN apt-get update \
+    && \
+    apt-get install -y libpq5 \
+    && \
+    rm -Rf /var/lib/apt/cache
 
-RUN addgroup -S -g ${GID} lemmy && \
-    adduser -S -H -D -G lemmy -u ${UID} -g "" -s /sbin/nologin lemmy
+RUN addgroup \
+      --system \
+      --gid ${GID} \
+      lemmy \
+    && \
+    adduser \
+      --system \
+      --uid ${UID} \
+      --gid ${GID} \
+      --shell /sbin/nologin \
+      --no-create-home \
+      lemmy
 
 USER lemmy
 
-CMD ["lemmy"]
+CMD ["/usr/local/bin/lemmy"]
 
 EXPOSE 8536
 
